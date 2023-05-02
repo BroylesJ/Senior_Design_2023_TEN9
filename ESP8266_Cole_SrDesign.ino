@@ -6,7 +6,11 @@
 ESP8266WiFiMulti wifiMulti;
 #define DEVICE "ESP8266"
 #include <Adafruit_BMP085.h>
+#include <Adafruit_INA219.h>
+
 Adafruit_BMP085 bmp;
+Adafruit_INA219 ina219_A;
+Adafruit_INA219 ina219_B(0x41);
 
 #define seaLevelPressure_hPa 1013.25
 #define baud_rate 115200
@@ -24,17 +28,32 @@ InfluxDBClient client(INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_BUCKET, INFLUXDB_TOKE
 Point sensor("wifi_status");
 Point TenNine("Power Harvesters");
 Point BMP180("Temperature and Pressure");
+Point INA219_A("Solar Current and Voltage");
+Point INA219_B("Battery Voltage and Current");
 
 float P;
 float INHG;
 float C;
 float F;
 int relay;
+float shuntvoltage = 0;
+float busvoltage = 0;
+float busvoltage2 = 0;
+float current_mA = 0;
+float loadvoltage = 0;
+float power_mW = 0;
+float batteryCurrent = 0;
+float sensorValue = 0;
+float vBat = 0;
+float SoC = 0;
+float ASoC = 50;
 
 void setup() {
   Serial.begin(9600);
+  ina219_A.begin();
+  ina219_B.begin(); 
 
-  // Setup wifi
+   //Setup wifi
   WiFi.mode(WIFI_STA);
   wifiMulti.addAP(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Connecting to Wifi");
@@ -52,11 +71,22 @@ void setup() {
       Serial.println();
     }
   }
-
+  //check INA29 Connections
+  if (! ina219_A.begin()) {
+    Serial.println("Failed to find INA219 chip");
+    while (1) { delay(10); }
+  }
+  if (! ina219_B.begin()) {
+    Serial.println("Failed to find INA219_B chip");
+    while (1) { delay(10); }
+  }
+  
   // Add tags for Influx
   sensor.addTag("device", DEVICE);
   sensor.addTag("SSID", WiFi.SSID());
   BMP180.addTag("device", "BMP180");
+  INA219_A.addTag("device", "INA219_A");
+  INA219_B.addTag("device", "INA219_B");
 
   // Check server connection
   if (client.validateConnection()) {
@@ -67,14 +97,6 @@ void setup() {
     Serial.println(client.getLastErrorMessage());
   }
 
-  //Write Data
-  sensor.clearFields();
-  sensor.addField("rssi", WiFi.RSSI());
-
-  //This line prints what we are writing
-  Serial.print("Writing: ");
-  Serial.println(sensor.toLineProtocol());
-
   //Checking Wifi Connection
   if (!client.writePoint(sensor)) {
     Serial.print("InfluxDB write failed: ");
@@ -82,15 +104,20 @@ void setup() {
   }
 }
 
+  
 
 ////////////////////START OF MAIN LOOP////////////////////
 
 void loop() {
   BMP180.clearFields();
+  INA219_A.clearFields();
+  INA219_B.clearFields();
+  
   getData();
   send_Data();
   printSerial();
-  ESP.deepSleep(10e6);
+  //ESP.deepSleep(10e6);
+  delay(1000);
 }
 
 void getData(){
@@ -99,12 +126,33 @@ void getData(){
   
   P = bmp.readPressure(); //read Sensor
   INHG = P / 3386.4; //conversion factor 
+
+  busvoltage = ina219_A.getBusVoltage_V();
+  current_mA = ina219_A.getCurrent_mA();
+  power_mW = ina219_A.getPower_mW();
+  busvoltage2 = ina219_B.getBusVoltage_V();
+  batteryCurrent = ina219_B.getCurrent_mA();
+  
+  if(busvoltage2 < 1.222){
+    SoC = 0.0968 * pow(busvoltage2, 33.145);
+  }
+  else{
+    SoC = (249.79*busvoltage2)-224.06;
+  }
 }
 
 void send_Data(){
   BMP180.addField("Temperature", F);
   BMP180.addField("Pressure", INHG);
   client.writePoint(BMP180);
+
+  INA219_A.addField("Solar Voltage", busvoltage);
+  INA219_A.addField("Solar Current", current_mA);
+  INA219_B.addField("Battery Voltage", busvoltage2);
+  INA219_B.addField("Battery Current", batteryCurrent);
+  INA219_B.addField("State of Charge", SoC);
+  client.writePoint(INA219_A);
+  client.writePoint(INA219_B);
 }
 
 void printSerial(){
@@ -115,6 +163,25 @@ void printSerial(){
   Serial.print("Pressure: ");
   Serial.print(INHG);
   Serial.print(" in-Hg");
+  Serial.println();
+  Serial.print("V Solar = ");
+  Serial.print(busvoltage);
+  Serial.print(" V");
+  Serial.println();
+  Serial.print("Current Solar = ");
+  Serial.print(current_mA);
+  Serial.print(" mA");  
+  Serial.println();
+  Serial.print("Solar Power = ");
+  Serial.print(power_mW);
+  Serial.print(" mW");
+  Serial.println();
+  Serial.print("Battery Voltage = ");
+  Serial.print(busvoltage2);
+  Serial.print(" V");
+  Serial.println();
+  Serial.print("SoC = ");
+  Serial.print(SoC);
   Serial.println();
   Serial.println();
   }
